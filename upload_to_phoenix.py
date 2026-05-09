@@ -14,6 +14,7 @@ Usage:
   uv run python upload_to_phoenix.py
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -111,8 +112,8 @@ def print_local_summary(retrieval_records: list[dict], gen_records: list[dict]) 
 # ---------------------------------------------------------------------------
 
 
-def upload_testset(client: pc.Client) -> pc.resources.datasets.Dataset:
-    records = load_jsonl(TESTSET_FILE)
+def upload_testset(client: pc.Client, path: Path = TESTSET_FILE) -> pc.resources.datasets.Dataset:
+    records = load_jsonl(path)
     print(f"\nUploading dataset 'crdc-testset' ({len(records)} rows)...")
 
     df = pd.DataFrame(
@@ -259,6 +260,21 @@ def upload_generation_experiment(
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Upload eval results to Arize Phoenix Cloud")
+    parser.add_argument(
+        "--dataset-only",
+        action="store_true",
+        help="Upload only the dataset; skip retrieval and generation experiments",
+    )
+    parser.add_argument(
+        "--testset-file",
+        default=None,
+        help=f"Path to testset JSONL (default: {TESTSET_FILE})",
+    )
+    args = parser.parse_args()
+
+    testset_path = Path(args.testset_file) if args.testset_file else TESTSET_FILE
+
     print(f"Phoenix client version: {pc.__version__}")
     print(f"Endpoint: {PHOENIX_COLLECTOR_ENDPOINT}")
     print(f"Project:  {PHOENIX_PROJECT}")
@@ -268,13 +284,20 @@ def main():
         api_key=PHOENIX_API_KEY,
     )
 
-    # Print local summary before uploading
-    retrieval_records = load_jsonl(RETRIEVAL_FILE)
-    gen_records = load_jsonl(GENERATION_FILE)
-    print_local_summary(retrieval_records, gen_records)
+    if not args.dataset_only:
+        # Print local summary before uploading
+        retrieval_records = load_jsonl(RETRIEVAL_FILE)
+        gen_records = load_jsonl(GENERATION_FILE)
+        print_local_summary(retrieval_records, gen_records)
 
     # Step 1: Dataset (anchor for all experiments)
-    dataset = upload_testset(client)
+    dataset = upload_testset(client, testset_path)
+
+    if args.dataset_only:
+        print("\n" + "=" * 60)
+        print("Dataset upload complete (--dataset-only).")
+        print(f"View at: {PHOENIX_COLLECTOR_ENDPOINT}")
+        return
 
     # Step 2: Retrieval experiment
     upload_retrieval_experiment(client, dataset)
