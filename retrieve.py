@@ -70,10 +70,10 @@ def build_aws_clients():
     return session, bedrock_agent_rt, bedrock_rt
 
 
-def build_ragas_llm_and_embeddings(session):
+def build_ragas_llm_and_embeddings(session, judge_model: str = NOVA_PRO_MODEL_ID):
     litellm.drop_params = True
     litellm_client = instructor.from_litellm(litellm.completion, mode=instructor.Mode.MD_JSON)
-    litellm_model  = f"bedrock/converse/{NOVA_PRO_MODEL_ID}"
+    litellm_model  = f"bedrock/converse/{judge_model}"
 
     ragas_llm = llm_factory(
         model=litellm_model,
@@ -96,14 +96,19 @@ def build_ragas_llm_and_embeddings(session):
 # Retrieval
 # ---------------------------------------------------------------------------
 
-def retrieve_chunks(question: str, agent_rt_client, kb_id: str) -> list[str]:
+def retrieve_chunks(
+    question: str, agent_rt_client, kb_id: str, k: int, search_type: str
+) -> list[str]:
     """Query Bedrock KB and return ordered list of text chunks (rank 1 first)."""
     try:
         resp = agent_rt_client.retrieve(
             knowledgeBaseId=kb_id,
             retrievalQuery={"text": question},
             retrievalConfiguration={
-                "vectorSearchConfiguration": {"numberOfResults": NUMBER_OF_RESULTS}
+                "vectorSearchConfiguration": {
+                    "numberOfResults": k,
+                    "overrideSearchType": search_type,
+                }
             },
         )
         chunks = [
@@ -126,7 +131,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return float(np.dot(va, vb) / denom) if denom > 0 else 0.0
 
 
-def compute_mrr(ground_truth: str, retrieved_chunks: list[str], embeddings_client) -> float:
+def compute_mrr(ground_truth: str, retrieved_chunks: list[str], embeddings_client, mrr_threshold: float = MRR_SIM_THRESHOLD) -> float:
     """Embed ground_truth and each chunk, return reciprocal rank of first relevant chunk."""
     if not retrieved_chunks:
         return 0.0
@@ -142,7 +147,7 @@ def compute_mrr(ground_truth: str, retrieved_chunks: list[str], embeddings_clien
 
     for rank, chunk_vec in enumerate(chunk_vecs, start=1):
         sim = _cosine(gt_vec, chunk_vec)
-        if sim >= MRR_SIM_THRESHOLD:
+        if sim >= mrr_threshold:
             return 1.0 / rank
     return 0.0
 
@@ -233,10 +238,22 @@ def print_summary(records: list[dict]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Retrieval evaluation against Bedrock KB")
-    parser.add_argument("--input",  default=str(TESTSET_FILE),
+    parser.add_argument("--input", default=str(TESTSET_FILE),
                         help="Input JSONL testset (default: testset.jsonl)")
     parser.add_argument("--output", default=None,
                         help="Output JSONL (default: <stem>_retrieval_results.jsonl)")
+    parser.add_argument("--k", type=int,
+                        default=int(os.getenv("RETRIEVE_K", NUMBER_OF_RESULTS)),
+                        help=f"Number of KB results to retrieve (default: {NUMBER_OF_RESULTS}, env: RETRIEVE_K)")
+    parser.add_argument("--search-type", choices=["SEMANTIC", "HYBRID"],
+                        default=os.getenv("RETRIEVE_SEARCH_TYPE", "SEMANTIC"),
+                        help="Bedrock KB search type (default: SEMANTIC, env: RETRIEVE_SEARCH_TYPE)")
+    parser.add_argument("--mrr-threshold", type=float,
+                        default=float(os.getenv("RETRIEVE_MRR_THRESHOLD", MRR_SIM_THRESHOLD)),
+                        help=f"Cosine similarity threshold for MRR (default: {MRR_SIM_THRESHOLD}, env: RETRIEVE_MRR_THRESHOLD)")
+    parser.add_argument("--judge-model",
+                        default=os.getenv("RETRIEVE_JUDGE_MODEL", NOVA_PRO_MODEL_ID),
+                        help=f"Bedrock model ID for RAGAS judge (default: {NOVA_PRO_MODEL_ID}, env: RETRIEVE_JUDGE_MODEL)")
     args = parser.parse_args()
 
     input_file      = Path(args.input)
@@ -246,6 +263,9 @@ def main():
 
     if not KB_ID:
         raise ValueError("KB_ID not set in environment / .env file")
+
+    judge_short = args.judge_model.split(".")[-1]
+    print(f"Config: KB={KB_ID}  K={args.k}  search={args.search_type}  threshold={args.mrr_threshold}  judge={judge_short}")
 
     print("Loading testset...")
     with open(input_file, encoding="utf-8") as f:
@@ -257,7 +277,7 @@ def main():
     session, agent_rt, _ = build_aws_clients()
 
     print("Initialising RAGAS LLM and embeddings...")
-    ragas_llm, ragas_embeddings, lc_embeddings = build_ragas_llm_and_embeddings(session)
+    ragas_llm, ragas_embeddings, lc_embeddings = build_ragas_llm_and_embeddings(session, args.judge_model)
 
     # -----------------------------------------------------------------------
     # Step 1: Retrieve — with checkpoint so crashes don't lose progress
@@ -271,7 +291,7 @@ def main():
         print(f"\nCheckpoint found: {len(checkpoint)} questions already retrieved.")
 
     retrieved_all: list[list[str]] = []
-    print(f"\nStep 1/3 — Retrieving from KB '{KB_ID}' ({NUMBER_OF_RESULTS} chunks/question)...")
+    print(f"\nStep 1/3 — Retrieving from KB '{KB_ID}' ({args.k} chunks/question, {args.search_type})...")
     with open(checkpoint_file, "a", encoding="utf-8") as ckpt_f:
         for i, record in enumerate(testset, 1):
             q = record["question"]
@@ -280,7 +300,7 @@ def main():
                 print(f"  [{i:2}/{n}] (cached) {q[:70]}  → {len(chunks)} chunks")
             else:
                 print(f"  [{i:2}/{n}] {q[:70]}")
-                chunks = retrieve_chunks(q, agent_rt, KB_ID)
+                chunks = retrieve_chunks(q, agent_rt, KB_ID, args.k, args.search_type)
                 print(f"         → {len(chunks)} chunks retrieved")
                 ckpt_f.write(json.dumps({"question": q, "chunks": chunks}, ensure_ascii=False) + "\n")
                 ckpt_f.flush()
@@ -301,10 +321,10 @@ def main():
     # -----------------------------------------------------------------------
     # Step 3: MRR per question
     # -----------------------------------------------------------------------
-    print(f"\nStep 3/3 — MRR via cosine similarity (threshold={MRR_SIM_THRESHOLD})...")
+    print(f"\nStep 3/3 — MRR via cosine similarity (threshold={args.mrr_threshold})...")
     mrr_scores: list[float] = []
     for i, (record, chunks) in enumerate(zip(testset, retrieved_all), 1):
-        mrr = compute_mrr(record["ground_truth"], chunks, lc_embeddings)
+        mrr = compute_mrr(record["ground_truth"], chunks, lc_embeddings, args.mrr_threshold)
         mrr_scores.append(mrr)
         print(f"  [{i:2}/{n}] MRR={mrr:.4f}  ({len(chunks)} chunks)")
 

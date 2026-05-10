@@ -61,6 +61,14 @@ uv run python generate_testset.py
 uv run python retrieve.py
 uv run python retrieve.py --input testsets/docx_testset_good.jsonl   # custom testset
 
+# Retriever flywheel — vary config per experiment (flags override .env values)
+uv run python retrieve.py --output results/retrieval_results_baseline.jsonl
+uv run python retrieve.py --search-type HYBRID --output results/retrieval_results_hybrid-K8.jsonl
+uv run python retrieve.py --search-type HYBRID --k 5  --output results/retrieval_results_hybrid-K5.jsonl
+uv run python retrieve.py --search-type HYBRID --k 10 --output results/retrieval_results_hybrid-K10.jsonl
+uv run python retrieve.py --search-type HYBRID --k 15 --output results/retrieval_results_hybrid-K15.jsonl
+# All flags can also be set in .env: RETRIEVE_K, RETRIEVE_SEARCH_TYPE, RETRIEVE_MRR_THRESHOLD, RETRIEVE_JUDGE_MODEL
+
 # Phase 2b — generation evaluation (default input: results/retrieval_results.jsonl)
 uv run python generate_and_eval.py
 uv run python generate_and_eval.py --input results/docx_testset_good_retrieval_results.jsonl
