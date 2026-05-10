@@ -65,8 +65,16 @@ uv run python retrieve.py --input testsets/docx_testset_good.jsonl   # custom te
 uv run python generate_and_eval.py
 uv run python generate_and_eval.py --input results/docx_testset_good_retrieval_results.jsonl
 
-# Phase 3 — upload to Arize Phoenix
+# Phase 3 — upload to Arize Phoenix (all results, default files)
 uv run python upload_to_phoenix.py
+
+# Upload only the dataset (no experiments)
+uv run python upload_to_phoenix.py --dataset-only
+uv run python upload_to_phoenix.py --dataset-only --testset-file testsets/docx_testset_good.jsonl --dataset-name crdc-testset-docx
+
+# Custom retrieval or generation files / experiment names
+uv run python upload_to_phoenix.py --retrieval-file results/docx_retrieval_results.jsonl --retrieval-experiment retrieval-eval-docx
+uv run python upload_to_phoenix.py --generation-file results/docx_generation_results.jsonl
 
 # Testset utilities
 uv run python build_docx_testset.py          # hand-curated testset from Word doc

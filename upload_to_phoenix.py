@@ -38,8 +38,8 @@ PHOENIX_PROJECT = os.getenv("PHOENIX_PROJECT", "crdc-dh-eval")
 # Phoenix uses PHOENIX_PROJECT_NAME env var to route experiments to a named project
 os.environ["PHOENIX_PROJECT_NAME"] = PHOENIX_PROJECT
 
-TESTSET_FILE    = Path(__file__).parent / "testsets" / "testset.jsonl"
-RETRIEVAL_FILE  = Path(__file__).parent / "results" / "retrieval_results.jsonl"
+TESTSET_FILE = Path(__file__).parent / "testsets" / "testset.jsonl"
+RETRIEVAL_FILE = Path(__file__).parent / "results" / "retrieval_results.jsonl"
 GENERATION_FILE = Path(__file__).parent / "results" / "generation_results.jsonl"
 
 MODEL_TO_EXPERIMENT = {
@@ -78,7 +78,9 @@ def print_local_summary(retrieval_records: list[dict], gen_records: list[dict]) 
 
     # Generation by model
     models = sorted({r["model"] for r in gen_records})
-    print(f"\n{'Model':<45} {'faithfulness':>13} {'answer_rel':>11} {'declined':>9} {'n':>5}")
+    print(
+        f"\n{'Model':<45} {'faithfulness':>13} {'answer_rel':>11} {'declined':>9} {'n':>5}"
+    )
     print(f"{'─'*45} {'─'*13} {'─'*11} {'─'*9} {'─'*5}")
     for m in models:
         recs = [r for r in gen_records if r["model"] == m]
@@ -98,7 +100,11 @@ def print_local_summary(retrieval_records: list[dict], gen_records: list[dict]) 
         short = m.split(".")[-1][:34]
         row = f"  {short:<35}"
         for ft in file_types:
-            recs = [r for r in gen_records if r["model"] == m and r["metadata"]["file_type"] == ft]
+            recs = [
+                r
+                for r in gen_records
+                if r["model"] == m and r["metadata"]["file_type"] == ft
+            ]
             if recs:
                 row += f"  {_mean([r['faithfulness'] for r in recs]):.3f} / {_mean([r['answer_relevancy'] for r in recs]):.3f}   "
             else:
@@ -112,9 +118,11 @@ def print_local_summary(retrieval_records: list[dict], gen_records: list[dict]) 
 # ---------------------------------------------------------------------------
 
 
-def upload_testset(client: pc.Client, path: Path = TESTSET_FILE) -> pc.resources.datasets.Dataset:
+def upload_testset(
+    client: pc.Client, path: Path = TESTSET_FILE, name: str = "crdc-testset-ragas"
+) -> pc.resources.datasets.Dataset:
     records = load_jsonl(path)
-    print(f"\nUploading dataset 'crdc-testset' ({len(records)} rows)...")
+    print(f"\nUploading dataset '{name}' ({len(records)} rows)...")
 
     df = pd.DataFrame(
         [
@@ -130,7 +138,7 @@ def upload_testset(client: pc.Client, path: Path = TESTSET_FILE) -> pc.resources
     )
 
     dataset = client.datasets.create_dataset(
-        name="crdc-testset",
+        name=name,
         dataframe=df,
         input_keys=["question"],
         output_keys=["ground_truth"],
@@ -147,10 +155,15 @@ def upload_testset(client: pc.Client, path: Path = TESTSET_FILE) -> pc.resources
 # ---------------------------------------------------------------------------
 
 
-def upload_retrieval_experiment(client: pc.Client, dataset) -> None:
-    records = load_jsonl(RETRIEVAL_FILE)
+def upload_retrieval_experiment(
+    client: pc.Client,
+    dataset,
+    path: Path = RETRIEVAL_FILE,
+    experiment_name: str = "retrieval-eval",
+) -> None:
+    records = load_jsonl(path)
     by_question = {r["question"]: r for r in records}
-    print(f"\nUploading retrieval experiment ({len(records)} rows)...")
+    print(f"\nUploading retrieval experiment '{experiment_name}' ({len(records)} rows)...")
 
     def task(example) -> dict:
         q = example.input["question"]
@@ -182,12 +195,14 @@ def upload_retrieval_experiment(client: pc.Client, dataset) -> None:
         dataset=dataset,
         task=task,
         evaluators=[eval_context_precision, eval_context_recall, eval_mrr],
-        experiment_name="retrieval-eval",
+        experiment_name=experiment_name,
         experiment_description="Bedrock KB retrieval: context_precision, context_recall, MRR (threshold=0.50)",
         print_summary=True,
     )
     exp_id = experiment["experiment_id"]
-    url = client.experiments.get_experiment_url(dataset_id=dataset.id, experiment_id=exp_id)
+    url = client.experiments.get_experiment_url(
+        dataset_id=dataset.id, experiment_id=exp_id
+    )
     print(f"  OK — retrieval-eval  URL: {url}")
 
 
@@ -250,7 +265,9 @@ def upload_generation_experiment(
         print_summary=True,
     )
     exp_id = experiment["experiment_id"]
-    url = client.experiments.get_experiment_url(dataset_id=dataset.id, experiment_id=exp_id)
+    url = client.experiments.get_experiment_url(
+        dataset_id=dataset.id, experiment_id=exp_id
+    )
     print(f"  OK — {experiment_name}  URL: {url}")
 
 
@@ -260,7 +277,9 @@ def upload_generation_experiment(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Upload eval results to Arize Phoenix Cloud")
+    parser = argparse.ArgumentParser(
+        description="Upload eval results to Arize Phoenix Cloud"
+    )
     parser.add_argument(
         "--dataset-only",
         action="store_true",
@@ -271,9 +290,31 @@ def main():
         default=None,
         help=f"Path to testset JSONL (default: {TESTSET_FILE})",
     )
+    parser.add_argument(
+        "--dataset-name",
+        default="crdc-testset-ragas",
+        help='Name for the Phoenix dataset (default: "crdc-testset-ragas")',
+    )
+    parser.add_argument(
+        "--retrieval-file",
+        default=None,
+        help=f"Path to retrieval results JSONL (default: {RETRIEVAL_FILE})",
+    )
+    parser.add_argument(
+        "--retrieval-experiment",
+        default="retrieval-eval",
+        help='Name for the retrieval experiment in Phoenix (default: "retrieval-eval")',
+    )
+    parser.add_argument(
+        "--generation-file",
+        default=None,
+        help=f"Path to generation results JSONL (default: {GENERATION_FILE})",
+    )
     args = parser.parse_args()
 
     testset_path = Path(args.testset_file) if args.testset_file else TESTSET_FILE
+    retrieval_path = Path(args.retrieval_file) if args.retrieval_file else RETRIEVAL_FILE
+    generation_path = Path(args.generation_file) if args.generation_file else GENERATION_FILE
 
     print(f"Phoenix client version: {pc.__version__}")
     print(f"Endpoint: {PHOENIX_COLLECTOR_ENDPOINT}")
@@ -286,12 +327,12 @@ def main():
 
     if not args.dataset_only:
         # Print local summary before uploading
-        retrieval_records = load_jsonl(RETRIEVAL_FILE)
-        gen_records = load_jsonl(GENERATION_FILE)
+        retrieval_records = load_jsonl(retrieval_path)
+        gen_records = load_jsonl(generation_path)
         print_local_summary(retrieval_records, gen_records)
 
     # Step 1: Dataset (anchor for all experiments)
-    dataset = upload_testset(client, testset_path)
+    dataset = upload_testset(client, testset_path, args.dataset_name)
 
     if args.dataset_only:
         print("\n" + "=" * 60)
@@ -300,7 +341,7 @@ def main():
         return
 
     # Step 2: Retrieval experiment
-    upload_retrieval_experiment(client, dataset)
+    upload_retrieval_experiment(client, dataset, retrieval_path, args.retrieval_experiment)
 
     # Step 3: Generation experiments
     print(f"\nLoaded {len(gen_records)} generation records total.")
