@@ -13,6 +13,14 @@ The pipeline runs in three phases:
 | 2b | `generate_and_eval.py` | Generates answers with 4 models; scores faithfulness and answer relevancy via RAGAS |
 | 3 | `upload_to_phoenix.py` | Uploads all results to Arize Phoenix for visualisation |
 
+KB setup scripts (run once per experiment config, require `AWS_ACCOUNT_ID` in `.env`):
+
+| Script | What it does |
+|--------|-------------|
+| `chunk_and_upload.py` | Schema-aware chunking: YAML → atomic docs, CSV → row-level docs; uploads to S3 |
+| `create_baseline_kb.py` | Creates Phase 1 baseline KB with Bedrock default chunking |
+| `create_experiment_kb.py` | Creates custom KB (YML passthrough + semantic PDF + passthrough MD/CSV); parameterized PDF chunk size |
+
 Additional scripts:
 
 - `build_docx_testset.py` — builds a testset from hand-curated questions (Word doc), using Claude Opus on Bedrock to generate ground-truth answers
@@ -45,7 +53,8 @@ ragas-test/
 ```bash
 # 1. Copy and fill in environment variables
 cp .env.example .env
-# Edit .env: set KB_ID, AWS_REGION, and optionally AWS_PROFILE or explicit credentials
+# Edit .env: set KB_ID, AWS_REGION, S3_BUCKET, and optionally AWS_PROFILE or explicit credentials
+# For KB creation scripts also set: AWS_ACCOUNT_ID, AWS_PERMISSIONS_BOUNDARY_ARN
 
 # 2. Install dependencies
 uv sync
@@ -89,6 +98,12 @@ uv run python build_docx_testset.py          # hand-curated testset from Word do
 uv run python build_negative_testset.py      # negative (out-of-scope) testset
 uv run python export_testset_to_docx.py      # export JSONL testset to Word for review
 uv run python recompute_mrr.py               # recompute MRR at different threshold
+
+# KB setup (run once per config; requires AWS_ACCOUNT_ID + AWS_PERMISSIONS_BOUNDARY_ARN in .env)
+uv run python chunk_and_upload.py                             # chunk YAML/CSV, upload to S3
+uv run python create_baseline_kb.py                           # Phase 1 baseline KB
+uv run python create_experiment_kb.py                         # custom KB (default: 1024 tokens, 95th percentile)
+uv run python create_experiment_kb.py --max-tokens 512 --percentile 90   # Phase 4a variant
 
 # DeepEval / red-team (requires live chatbot API access)
 uv run python deepeval_eval.py               # all questions
