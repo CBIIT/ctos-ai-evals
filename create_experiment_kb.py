@@ -31,9 +31,10 @@ PERMISSIONS_BOUNDARY_ARN = os.getenv("AWS_PERMISSIONS_BOUNDARY_ARN", "")
 VECTOR_BUCKET = os.getenv("KB_VECTOR_BUCKET", "chunking-exp-vectors")
 VECTOR_INDEX = "chunking-exp-index"
 
-EMBED_MODEL_ARN = (
-    f"arn:aws:bedrock:{REGION}::foundation-model/amazon.titan-embed-text-v2:0"
-)
+TITAN_EMBED_V2    = "amazon.titan-embed-text-v2:0"
+COHERE_EMBED_V3   = "cohere.embed-english-v3"
+DEFAULT_EMBED_MODEL = TITAN_EMBED_V2
+
 BUCKET_ARN = f"arn:aws:s3:::{S3_BUCKET}"
 VECTOR_INDEX_ARN = f"arn:aws:s3vectors:{REGION}:{ACCOUNT_ID}:bucket/{VECTOR_BUCKET}/index/{VECTOR_INDEX}"
 
@@ -74,11 +75,11 @@ def create_vector_index(s3v):
         print("  Index already exists, skipping.")
 
 
-def create_iam_role(iam):
+def create_iam_role(iam, embed_model_arn: str):
     """
     Bedrock needs permission to:
     1. Read your S3 data bucket (to ingest documents)
-    2. Call Titan Embed (to create vectors)
+    2. Call the embedding model (to create vectors)
     3. Read/write the S3 Vectors index (to store/query vectors)
     """
     print(f"Creating IAM role: {ROLE_NAME}")
@@ -142,7 +143,7 @@ def create_iam_role(iam):
         ),
     )
 
-    # Policy 2: Invoke Titan Embed to create vectors
+    # Policy 2: Invoke the embedding model to create vectors
     iam.put_role_policy(
         RoleName=ROLE_NAME,
         PolicyName="BedrockEmbedding",
@@ -153,7 +154,7 @@ def create_iam_role(iam):
                     {
                         "Effect": "Allow",
                         "Action": "bedrock:InvokeModel",
-                        "Resource": EMBED_MODEL_ARN,
+                        "Resource": embed_model_arn,
                     }
                 ],
             }
@@ -198,18 +199,18 @@ def create_iam_role(iam):
     return role_arn
 
 
-def create_knowledge_base(bedrock_agent, role_arn):
-    print(f"Creating Knowledge Base: {KB_NAME}")
+def create_knowledge_base(bedrock_agent, role_arn, embed_model_arn: str, embed_dimension: int):
+    print(f"Creating Knowledge Base: {KB_NAME}  (embed={embed_model_arn.split('/')[-1]}  dim={embed_dimension})")
     resp = bedrock_agent.create_knowledge_base(
         name=KB_NAME,
         roleArn=role_arn,
         knowledgeBaseConfiguration={
             "type": "VECTOR",
             "vectorKnowledgeBaseConfiguration": {
-                "embeddingModelArn": EMBED_MODEL_ARN,
+                "embeddingModelArn": embed_model_arn,
                 "embeddingModelConfiguration": {
                     "bedrockEmbeddingModelConfiguration": {
-                        "dimensions": 1024,
+                        "dimensions": embed_dimension,
                         "embeddingDataType": "FLOAT32",
                     }
                 },
@@ -333,6 +334,11 @@ def main():
     parser.add_argument("--percentile", type=int,
                         default=int(os.getenv("KB_PDF_PERCENTILE", 95)),
                         help="Breakpoint percentile threshold for PDF chunking (default: 95, env: KB_PDF_PERCENTILE)")
+    parser.add_argument("--embedding-model", default=os.getenv("KB_EMBEDDING_MODEL", DEFAULT_EMBED_MODEL),
+                        help=f"Bedrock embedding model ID (default: {DEFAULT_EMBED_MODEL}, env: KB_EMBEDDING_MODEL)")
+    parser.add_argument("--embedding-dimension", type=int,
+                        default=int(os.getenv("KB_EMBEDDING_DIMENSION", 1024)),
+                        help="Embedding output dimension — must match the model (default: 1024, env: KB_EMBEDDING_DIMENSION)")
     args = parser.parse_args()
 
     if not ACCOUNT_ID:
@@ -340,7 +346,8 @@ def main():
     if not PERMISSIONS_BOUNDARY_ARN:
         raise ValueError("AWS_PERMISSIONS_BOUNDARY_ARN not set in environment / .env file")
 
-    print(f"Config: max_tokens={args.max_tokens}  percentile={args.percentile}")
+    embed_model_arn = f"arn:aws:bedrock:{REGION}::foundation-model/{args.embedding_model}"
+    print(f"Config: max_tokens={args.max_tokens}  percentile={args.percentile}  embed={args.embedding_model}  dim={args.embedding_dimension}")
 
     iam, bedrock_agent, s3v = build_clients()
 
