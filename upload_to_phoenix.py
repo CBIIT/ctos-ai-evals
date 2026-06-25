@@ -119,7 +119,10 @@ def print_local_summary(retrieval_records: list[dict], gen_records: list[dict]) 
 
 
 def upload_testset(
-    client: pc.Client, path: Path = TESTSET_FILE, name: str = "crdc-testset-ragas"
+    client: pc.Client,
+    path: Path = TESTSET_FILE,
+    name: str = "crdc-testset-ragas",
+    description: str = "CRDC RAGAS evaluation testset",
 ) -> pc.resources.datasets.Dataset:
     records = load_jsonl(path)
     print(f"\nUploading dataset '{name}' ({len(records)} rows)...")
@@ -143,7 +146,7 @@ def upload_testset(
         input_keys=["question"],
         output_keys=["ground_truth"],
         metadata_keys=["file_type", "question_type", "source"],
-        dataset_description="CRDC RAGAS evaluation testset — 53 questions across md/pdf/yml sources",
+        dataset_description=description,
     )
     url = client.experiments.get_dataset_experiments_url(dataset_id=dataset.id)
     print(f"  OK — dataset id: {dataset.id}  URL: {url}  Rows: {len(records)}")
@@ -296,6 +299,11 @@ def main():
         help='Name for the Phoenix dataset (default: "crdc-testset-ragas")',
     )
     parser.add_argument(
+        "--dataset-description",
+        default="CRDC RAGAS evaluation testset",
+        help='Description for the Phoenix dataset (default: "CRDC RAGAS evaluation testset")',
+    )
+    parser.add_argument(
         "--retrieval-file",
         default=None,
         help=f"Path to retrieval results JSONL (default: {RETRIEVAL_FILE})",
@@ -332,7 +340,7 @@ def main():
         print_local_summary(retrieval_records, gen_records)
 
     # Step 1: Dataset (anchor for all experiments)
-    dataset = upload_testset(client, testset_path, args.dataset_name)
+    dataset = upload_testset(client, testset_path, args.dataset_name, args.dataset_description)
 
     if args.dataset_only:
         print("\n" + "=" * 60)
