@@ -140,16 +140,26 @@ def upload_testset(
         ]
     )
 
-    dataset = client.datasets.create_dataset(
-        name=name,
-        dataframe=df,
-        input_keys=["question"],
-        output_keys=["ground_truth"],
-        metadata_keys=["file_type", "question_type", "source"],
-        dataset_description=description,
-    )
+    try:
+        dataset = client.datasets.create_dataset(
+            name=name,
+            dataframe=df,
+            input_keys=["question"],
+            output_keys=["ground_truth"],
+            metadata_keys=["question_type", "source"],
+            split_keys=["file_type"],
+            dataset_description=description,
+        )
+        print(f"  Created — dataset id: {dataset.id}  Rows: {len(records)}")
+    except Exception as e:
+        if "already exists" in str(e):
+            print(f"  Dataset '{name}' already exists — fetching existing dataset...")
+            dataset = client.datasets.get_dataset(dataset=name)
+            print(f"  Found — dataset id: {dataset.id}")
+        else:
+            raise
     url = client.experiments.get_dataset_experiments_url(dataset_id=dataset.id)
-    print(f"  OK — dataset id: {dataset.id}  URL: {url}  Rows: {len(records)}")
+    print(f"  URL: {url}")
     return dataset
 
 
@@ -163,19 +173,26 @@ def upload_retrieval_experiment(
     dataset,
     path: Path = RETRIEVAL_FILE,
     experiment_name: str = "retrieval-eval",
+    file_type_filter: str | None = None,
 ) -> None:
     records = load_jsonl(path)
+    if file_type_filter:
+        records = [r for r in records if r.get("metadata", {}).get("file_type") == file_type_filter]
     by_question = {r["question"]: r for r in records}
-    print(f"\nUploading retrieval experiment '{experiment_name}' ({len(records)} rows)...")
+    print(f"\nUploading retrieval experiment '{experiment_name}' ({len(records)} rows)" +
+          (f" [file_type={file_type_filter}]" if file_type_filter else "") + "...")
 
     def task(example) -> dict:
         q = example.input["question"]
         r = by_question.get(q, {})
         contexts = r.get("retrieved_contexts", [])
+        meta = r.get("metadata", {})
         return {
             "retrieved_contexts": "\n".join(
                 f"{i}. {c}" for i, c in enumerate(contexts, 1)
             ),
+            "file_type": meta.get("file_type", example.metadata.get("file_type", "")),
+            "question_type": meta.get("question_type", example.metadata.get("question_type", "")),
         }
 
     def eval_context_precision(output, example) -> ExperimentEvaluation:
@@ -194,19 +211,28 @@ def upload_retrieval_experiment(
         r = by_question.get(example.input["question"], {})
         return ExperimentEvaluation(name="mrr", score=r.get("reciprocal_rank", 0.0))
 
+    description = "Bedrock KB retrieval: context_precision, context_recall, MRR (threshold=0.50)"
+    if file_type_filter:
+        description += f" | file_type={file_type_filter}"
+        dataset_split = client.datasets.get_dataset(
+            dataset=dataset.name, splits=[file_type_filter]
+        )
+    else:
+        dataset_split = dataset
+
     experiment = client.experiments.run_experiment(
-        dataset=dataset,
+        dataset=dataset_split,
         task=task,
         evaluators=[eval_context_precision, eval_context_recall, eval_mrr],
         experiment_name=experiment_name,
-        experiment_description="Bedrock KB retrieval: context_precision, context_recall, MRR (threshold=0.50)",
+        experiment_description=description,
         print_summary=True,
     )
     exp_id = experiment["experiment_id"]
     url = client.experiments.get_experiment_url(
         dataset_id=dataset.id, experiment_id=exp_id
     )
-    print(f"  OK — retrieval-eval  URL: {url}")
+    print(f"  OK — {experiment_name}  URL: {url}")
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +315,11 @@ def main():
         help="Upload only the dataset; skip retrieval and generation experiments",
     )
     parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Upload dataset + retrieval experiment only; skip generation experiments",
+    )
+    parser.add_argument(
         "--testset-file",
         default=None,
         help=f"Path to testset JSONL (default: {TESTSET_FILE})",
@@ -318,6 +349,11 @@ def main():
         default=None,
         help=f"Path to generation results JSONL (default: {GENERATION_FILE})",
     )
+    parser.add_argument(
+        "--split-by-file-type",
+        action="store_true",
+        help="Upload one retrieval experiment per file_type (pdf, yml, md) instead of one combined experiment",
+    )
     args = parser.parse_args()
 
     testset_path = Path(args.testset_file) if args.testset_file else TESTSET_FILE
@@ -333,7 +369,7 @@ def main():
         api_key=PHOENIX_API_KEY,
     )
 
-    if not args.dataset_only:
+    if not args.dataset_only and not args.retrieval_only:
         # Print local summary before uploading
         retrieval_records = load_jsonl(retrieval_path)
         gen_records = load_jsonl(generation_path)
@@ -348,8 +384,22 @@ def main():
         print(f"View at: {PHOENIX_COLLECTOR_ENDPOINT}")
         return
 
-    # Step 2: Retrieval experiment
-    upload_retrieval_experiment(client, dataset, retrieval_path, args.retrieval_experiment)
+    # Step 2: Retrieval experiment(s)
+    if args.split_by_file_type:
+        for ft in ["pdf", "yml", "md"]:
+            upload_retrieval_experiment(
+                client, dataset, retrieval_path,
+                experiment_name=f"{args.retrieval_experiment}-{ft}",
+                file_type_filter=ft,
+            )
+    else:
+        upload_retrieval_experiment(client, dataset, retrieval_path, args.retrieval_experiment)
+
+    if args.retrieval_only:
+        print("\n" + "=" * 60)
+        print("Retrieval experiment upload complete (--retrieval-only).")
+        print(f"View at: {PHOENIX_COLLECTOR_ENDPOINT}")
+        return
 
     # Step 3: Generation experiments
     print(f"\nLoaded {len(gen_records)} generation records total.")
